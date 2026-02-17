@@ -1,0 +1,591 @@
+---
+title: "RR1 2nd draft"
+format: html
+editor: visual
+---
+
+## Introduction draft
+
+This report analyzes data from the Self-Report Character Personality Quiz (SWCPQ), a large online dataset collecting demographic information, personality measures, and character similarity ratings from several hundred thousand participants. After completing a self-report personality questionnaire, respondents rated how similar they felt to fictional characters drawn from a wide range of cultural universes (television series, films, literature, animation, and comics). Each rating captures perceived similarity on a six-point scale, providing a rich measure of identification with fictional characters. The dataset also includes demographic variables (age group, gender, native language) and personality indicators, notably Enneagram types, allowing for nuanced individual-level analysis.
+
+The main objective of this report is to examine how genre influences perceived similarity with fictional characters. To this end, fictional universes are classified into broad genre categories (e.g. drama, crime/legal, comedy/satire, fantasy/science-fiction, animation).
+
+The main hypothesis suggests / posits that participants report greater perceived similarity with characters from realist genres (e.?g drama, crime..) than with characters from fantastical or highly fictional genres, such as fantasy or science fiction. This hypothesis is grounded in the idea that realistic settings and social dynamics facilitate identification by mirroring everyday experiences.
+
+#### H1 (Main effect of genre)
+
+H1: I expect an effect of fictional genre on perceived similarity, such that participants report higher perceived similarity scores for characters from realist genres than for characters from fantastical genres.
+
+Independent variable: Fictional genre (Realist vs. Fantastical)
+
+Dependent variable: Perceived similarity score
+
+#### H2: Interaction effects between genre and individual characteristics
+
+H2: I expect an interaction effect between fictional genre and gender on perceived similarity, such that the difference in perceived similarity between realist and fantastical genres varies across gender groups.
+
+Independent variables: Fictional genre, gender
+
+Dependent variable: Perceived similarity score
+
+#### H3: Interaction between genre and age group
+
+H3: I expect an interaction effect between fictional genre and age group on perceived similarity, such that the difference in perceived similarity between realist and fantastical genres varies across age groups.
+
+Independent variables: Fictional genre, age group
+
+Dependent variable: Perceived similarity score
+
+To test these hypotheses, the first analysis un this draft proceeds in several steps. First, the raw survey data are cleaned and relevant demographic and personality variables are recoded for clarity and analytical consistency. Second, character similarity ratings—originally stored in a nested format—are transformed into a long format where each row represents a single character rating by a respondent. Third, ratings are aggregated at the respondent–universe level to compute summary measures of perceived similarity. Finally, fictional universes are classified into broad genre categories, allowing comparisons of perceived similarity across genres and the examination of interaction effects between genre and individual characteristics such as gender, age group, and Enneagram type (update to only realist vs fantastic)
+
+## Data Cleaning
+
+### Loading required packages and raw data
+
+This chunk loads the core R packages used throughout the analysis and imports the raw SWCPQ dataset. The data are read both as a CSV and as a tab-delimited file to ensure correct parsing of variables.
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(readr)
+
+Data_ID <- read_csv("SWCPQ-Identification-Survey-Dataset-July2022.csv")
+
+
+Data_ID <- read_delim(
+  "SWCPQ-Identification-Survey-Dataset-July2022.csv",
+  delim = "\t",
+  show_col_types = FALSE
+)
+
+glimpse(Data_ID)
+str(Data_ID)
+```
+
+Here, I want to inspect the unique values of key demographic and personality variables to identify how missing values and coding schemes are represented in the raw data.
+
+```{r}
+unique(Data_ID$age_group)
+unique(Data_ID$region)
+unique(Data_ID$gender)
+unique(Data_ID$engNat)
+unique(Data_ID$occupation)
+unique(Data_ID$jung_type)
+unique(Data_ID$enneagram_type)
+unique(Data_ID$screen)
+
+```
+
+Replaces invalid placeholder values (coded as 0) with missing values and converts selected variables into factors to prevent them from being treated as numeric in later analyses:
+
+```{r}
+Data_clean <- Data_ID %>%
+  mutate(
+    gender = na_if(gender, 0),
+    engNat = na_if(engNat, 0),
+
+    gender = factor(gender),
+    engNat = factor(engNat)
+  )
+
+table(Data_clean$gender, useNA = "ifany")
+table(Data_clean$engNat, useNA = "ifany")
+```
+
+Numeric codes for age group and screen type are relabeled with descriptive factor levels to improv interpretability. (to not confuse them with numeric i'm chaging their name):
+
+```{r}
+Data_clean <- Data_clean %>%
+  mutate(
+    age_group = factor(age_group,
+                       levels = c(1, 2, 3),
+                       labels = c("Group 1", "Group 2", "Group 3")),
+    
+    screen = factor(screen,
+                    levels = c(1, 2),
+                    labels = c("Type 1", "Type 2"))
+  )
+
+```
+
+Cleaning Enneagram type: Because Enneagram types are valid only from 1 to 9, values coded as 0 are treated as missing and the variable is converted into a factor.
+
+```{r}
+Data_clean <- Data_clean %>%
+  mutate(
+    enneagram_type = na_if(enneagram_type, 0),
+    enneagram_type = factor(enneagram_type, levels = 1:9)
+  )
+nrow(Data_clean)
+
+view(Data_clean)
+```
+
+| Attention and engagement filtering
+| Response time variables are used as proxies for participant engagement. Extremely short durations may indicate random clicking, while extremely long durations may reflect inattention or interruptions.
+
+```{r}
+summary(Data_clean$introelapse)
+summary(Data_clean$testelapse)
+summary(Data_clean$surveyelapse)
+```
+
+```{r}
+#To operationalize this, the lowest and highest 5% of response times are identified as extreme values.
+#removing the extreemes:
+quantile(Data_clean$introelapse,  probs = c(0.05, 0.95), na.rm = TRUE)
+quantile(Data_clean$testelapse,   probs = c(0.05, 0.95), na.rm = TRUE)
+quantile(Data_clean$surveyelapse, probs = c(0.05, 0.95), na.rm = TRUE)
+
+```
+
+Because similarity ratings are stored as nested strings, the data are transformed into a long format where each row corresponds to a single character rating.
+
+```{r}
+#first add resoindant id 
+Data_clean$resp_id <- seq_len(nrow(Data_clean))
+
+library(tidyr)
+
+ratings_long <- Data_clean %>%
+  filter(!is.na(survey_ratings)) %>%
+  separate_rows(
+    survey_ratings,
+    sep = "\\], \\["
+  )
+
+ratings_long$survey_ratings <- gsub("\\[|\\]", "", ratings_long$survey_ratings)
+
+head(ratings_long$survey_ratings)
+
+
+```
+
+Extracting rating components: Each rating string is split into character ID, similarity score, and response time, which are then converted into appropriate data types.
+
+```{r}
+ratings_long <- ratings_long %>%
+  separate(
+    survey_ratings,
+    into = c("character_id", "similarity", "rating_time"),
+    sep = ", "
+  )
+
+ratings_long$character_id <- gsub('"', '', ratings_long$character_id)
+ratings_long$similarity   <- as.numeric(ratings_long$similarity)
+ratings_long$rating_time  <- as.numeric(ratings_long$rating_time)
+
+head(ratings_long)
+table(ratings_long$similarity, useNA = "ifany")
+```
+
+Aggregating ratings at the universe level: Character IDs are used to extract universe identifiers. Ratings are then summarized at the respondent–universe level to capture average similarity and consistency of identification.
+
+```{r}
+#rating aggregated into one variable
+ratings_long$universe <- sub("/.*", "", ratings_long$character_id)
+head(ratings_long$character_id)
+head(ratings_long$universe)
+
+keep <- grepl(
+  paste0("(^|,)", ratings_long$universe, "(,|$)"),
+  ratings_long$universes_selected
+)
+
+ratings_sel <- ratings_long[keep, ]
+
+nrow(ratings_long)
+nrow(ratings_sel)
+
+
+```
+
+Now final data set with only stuff i need for my Research Question:
+
+```{r}
+final_data <- ratings_sel[, c("resp_id", "gender", "age_group", "engNat", "screen", "year", "universes_selected", "character_id", "universe", "similarity", "enneagram_type" )] 
+
+view(final_data)
+```
+
+Cleaning and summarizing universe selection behavior: Respondents were allowed to select multiple fictional universes. This step standardizes the formatting of the universe selection variable and computes the number of universes selected by each respondent, which serves as an indicator of breadth of engagement with fictional worlds.
+
+```{r}
+library(stringr)
+
+ratings_long <- ratings_long %>%
+  mutate(
+    universes_selected_clean = str_replace_all(universes_selected, ",", ", "),
+    n_universes_selected = ifelse(
+      is.na(universes_selected),
+      0,
+      str_count(universes_selected, ",") + 1
+    )
+  )
+
+ratings_long %>% select(resp_id, universes_selected_clean, n_universes_selected) %>% distinct() %>% head(5)
+
+user_universe_summary <- ratings_long %>%
+  group_by(resp_id, universe) %>%
+  summarise(
+    n_ratings = n(),
+    mean_similarity = mean(similarity, na.rm = TRUE),
+    prop_similar = mean(similarity <= 2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+head(user_universe_summary)
+view(user_universe_summary)
+view(ratings_long)
+```
+
+Because each respondent can rate multiple characters within the same universe, similarity ratings are aggregated at the respondent–universe level. This produces summary measures capturing the intensity and consistency of identification within each fictional universe
+
+##### Interpretation of the data structure so far:
+
+-   Respondents may select multiple universes, which creates multiple universe-level observations per respondent
+
+<!-- -->
+
+-   Within each universe, respondents rate multiple characters, generating one row per character rating
+
+-   Universe-level summaries therefore repeat across characters belonging to the same universe for a given respondent
+
+I want to contruct the genre category, but I have to know first how many distinct fictional universes are present in the dataset and how frequently they are rated.
+
+```{r}
+unique(ratings_long$universe)
+length(unique(ratings_long$universe))
+
+univ_counts <- ratings_long %>%
+  count(universe, sort = TRUE)
+
+nrow(univ_counts)   # <- this is number of universes (341)
+
+
+```
+
+341 universes selected.
+
+```{r}
+ratings_base <- ratings_long %>% 
+  select(resp_id, universe, character_id, similarity) 
+
+users_base <- Data_clean %>% 
+  select(resp_id, year, country, age_group, gender, engNat, screen, enneagram_type) 
+
+user_universe_summary %>% 
+  count(resp_id) %>% 
+  summarise(max_n = max(n)) 
+
+Data_RR1 <- ratings_base %>% 
+  left_join(users_base, by = "resp_id")%>% 
+  left_join(user_universe_summary, by = c("resp_id", "universe")) 
+
+str(Data_RR1)
+```
+
+final data: To prepare the data for hypothesis testing, character-level ratings are merged with respondent-level demographic and personality variables, as well as universe-level summary measures.
+
+```{r}
+
+```
+
+```{r}
+#i need to make the user_similarity table better
+Data_final <- user_universe_summary %>%
+  left_join(
+    Data_clean %>%
+      distinct(resp_id, age_group, gender, engNat, screen, enneagram_type),
+    by = "resp_id"
+  )
+
+str(Data_final)
+
+```
+
+341 universes selected, for complexity reasons I'll go with only the top 50 universes to define their genres.
+
+```{r}
+universes <- sort(unique(Data_RR1$universe))
+universe_counts <- Data_RR1 %>%
+  count(universe, sort = TRUE)
+
+head(universe_counts, 10)
+top_50_universes <- universe_counts %>%
+  slice_head(n = 50)
+top_50_list <- top_50_universes$universe
+
+Data_top50 <- Data_RR1 %>%
+  filter(universe %in% top_50_list)
+
+top_50_universes
+
+
+paste(top_50_list, collapse = ",")
+
+```
+
+Realist = Drama + Crime + Sitcom + Comedy =universes with realistic events
+
+Fantastical = Fantasy + Sci-Fi + Animated Fantasy =universes that use fantasy (characters have super powers...)
+
+create data frame with the genres mapped
+
+```{r}
+realist_universes <- c(
+  "S", "SHL", "FR", "B99", "T7S", "MF", "HIMYM", "NG", "PR",
+  "TO", "GA", "ONB", "CM", "GILG", "GLEE", "MG", "CAS",
+  "LS", "PC", "PP", "T", "RD", "RAT"
+)
+fantastical_universes <- c(
+  "HP", "MCU", "ALA", "GOT", "ST", "HG", "UA", "XM", "LOTR",
+  "SW", "SL", "LU", "DN", "SK", "SBSP", "FUTR", "FN",
+  "TS", "F", "BATB", "WO", "GP", "BOBB", "AL"
+)
+
+genre_map <- tibble(
+  universe = c(realist_universes, fantastical_universes),
+  universe_genre = c(
+    rep("Realist", length(realist_universes)),
+    rep("Fantastical", length(fantastical_universes))
+  )
+)
+
+view(genre_map)
+view(Data_RR1)
+```
+
+To prepare the data for hypothesis testing, character-level ratings are merged with respondent-level demographic and personality variables, as well as universe-level summary measures.
+
+```{r}
+ratings_base <- ratings_long %>%
+  select(resp_id, universe, character_id, similarity)
+
+
+users_base <- Data_clean %>%
+  select(resp_id, year, country, age_group, gender, engNat, screen, enneagram_type)
+
+user_universe_summary %>% count(resp_id) %>% summarise(max_n = max(n))
+
+Data_RR1 <- ratings_base %>% 
+  right_join(users_base, by = "resp_id")%>%
+  left_join(user_universe_summary, by = c("resp_id")) 
+
+
+str(Data_RR1)
+
+#orgnize the data set:
+
+Data_RR1 <- Data_RR1 %>%
+  rename(
+    universe_selected = universe.y
+  ) %>%
+  select(
+    resp_id,
+    year,
+    country,
+    age_group,
+    gender,
+    engNat,
+    screen,
+    enneagram_type,
+    universe_selected,
+    n_ratings,
+    universe.x,
+    character_id,
+    similarity,
+    mean_similarity,
+    prop_similar
+  )
+
+
+view(Data_RR1)
+```
+
+Also genre is merged to the same data set Data_RR1
+
+```{r}
+Data_RR1 <- Data_RR1 %>%
+   left_join(
+     genre_map,
+     by = c("universe_selected" = "universe")
+   )
+
+view(Data_RR1)
+```
+
+because any movie that wasnt in the top 50 is not mapped in genre_map; I named it as "other"
+
+```{r}
+Data_RR1 <- Data_RR1 %>%
+  mutate(
+    universe_genre = ifelse(
+      is.na(universe_genre),
+      "Other",
+      universe_genre
+    )
+  )
+```
+
+## **Descriptive statistics:**
+
+```{r}
+view(Data_RR1)
+str(Data_RR1)
+library(dplyr)
+library(ggplot2)
+
+Data_RR1 %>%
+  summarise(
+    n_obs = n(),
+    n_resp = n_distinct(resp_id),
+    mean_similarity = mean(similarity, na.rm = TRUE),
+    sd_similarity = sd(similarity, na.rm = TRUE),
+    mean_n_ratings = mean(n_ratings, na.rm = TRUE)
+  )
+
+table(Data_RR1$gender, useNA = "ifany")
+table(Data_RR1$age_group, useNA = "ifany")
+table(Data_RR1$engNat, useNA = "ifany")
+table(Data_RR1$screen, useNA = "ifany")
+table(Data_RR1$universe_genre, useNA = "ifany")
+
+Data_RR1 %>%
+  group_by(universe_genre) %>%
+  summarise(
+    mean_similarity = mean(similarity, na.rm = TRUE),
+    sd_similarity = sd(similarity, na.rm = TRUE),
+    n = n()
+  )
+
+Data_RR1 %>%
+  group_by(gender) %>%
+  summarise(
+    mean_similarity = mean(similarity, na.rm = TRUE),
+    n = n()
+  )
+
+Data_RR1 %>%
+  group_by(age_group) %>%
+  summarise(
+    mean_similarity = mean(similarity, na.rm = TRUE),
+    n = n()
+  )
+
+ggplot(Data_RR1, aes(x = universe_genre, y = similarity)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(Data_RR1, aes(x = age_group, y = similarity)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(Data_RR1, aes(x = gender, y = similarity)) +
+  geom_boxplot() +
+  theme_minimal()
+
+```
+
+Interpretation:
+
+The dataset contains 18,969,784 character ratings from 297,877 respondents, with an overall mean similarity score of 3.95 (SD = 1.50) on a 1–6 scale. On average, respondents rated 4.7 characters per universe, indicating substantial engagement with the task.
+
+Across universe genres, perceived similarity is very close but not identical. Characters from Realist universes show the highest mean similarity (M = 3.97), followed by Fantastical universes (M = 3.95), while Other/Unmapped universes have slightly lower similarity (M = 3.93). The boxplot confirms this pattern: distributions largely overlap, but the median similarity is marginally higher for Realist content, consistent with the hypothesis that realistic settings facilitate identification.
+
+Demographic differences are modest but systematic. Gender differences are small: respondents coded as gender 2 report slightly higher similarity (M = 3.95) than gender 1 (M = 3.94) and gender 3 (M = 3.91), with largely overlapping distributions in the boxplot. Age effects are clearer: mean similarity increases steadily from Group 1 (13–19, M = 3.92) to Group 3 (28+, M = 3.97). Boxplots show a stable median around 4 across age groups, but older respondents display slightly higher central tendencies.
+
+## Analysis P1: Inferencial stats
+
+first i'm downloading the data set so I don't have to rerun all chuncks of code:
+
+```{r}
+saveRDS(Data_RR1, "Data_RR1.rds")
+Data_RR1 <- readRDS("Data_RR1.rds")
+
+```
+
+NEW DATA
+
+```{r}
+Analysis_RR1 <- Data_RR1 %>%
+  filter(!is.na(universe_genre), universe_genre != "Other") %>%
+  distinct(resp_id, universe_selected, universe_genre, gender, age_group, enneagram_type, mean_similarity) %>%
+  filter(!is.na(mean_similarity))
+
+
+Analysis_RR1 <-Analysis_RR1 %>%
+ mutate(
+    universe_genre = factor(universe_genre),
+    gender = factor(gender),
+    age_group = factor(age_group),
+    enneagram_type = factor(enneagram_type)
+  )
+
+str(Analysis_RR1)
+view(Analysis_RR1)
+```
+
+Before linear model testing the first hypothesis, i"ll run first assumption checks, homostecity and normality
+
+Assumption checks (for linear models)
+
+We’ll check assumptions for the core model first. Start with H1 model (genre main effect), then reuse the same checks for interaction models.1A) Fit the baseline linear model (H1)
+
+```{r}
+m_h1 <- lm(mean_similarity ~ universe_genre, data = Analysis_RR1)
+
+```
+
+Checking assumptions: Distribution of residuals
+
+```{r}
+
+m_h1$residuals 
+
+hist(m_h1$residuals, breaks = 20,                                    
+     main = "Residuals histogram (H1)", xlab = "Residuals")
+
+qqnorm(m_h1$residuals, main = "Normal Q-Q plot (H1)")                 
+qqline(m_h1$residuals)                                   
+
+```
+
+The distribution of residuals is approximately symmetric and centered around zero, which is consistent with the assumptions of a General Linear Model.
+
+Checking assumptions: homogeneity of variance
+
+```{r}
+
+plot(m_h1$fitted.values, m_h1$residuals,                                 
+     xlab = "Fitted values", ylab = "Residuals",
+     main = "Residuals vs Fitted (h1)")
+abline(h = 0, lty = 2)              
+```
+
+because universe_genre is a binary categorical predictor (Realist vs Fantastical), the model produces only two fitted values (one mean per group). As a result, residuals stack vertically above each fitted value.
+
+The residuals-versus-fitted plot shows two vertical bands corresponding to the two genre categories. This pattern is expected given the categorical predictor. Residuals are centered around zero and exhibit comparable dispersion across fitted values, providing no evidence of heteroscedasticity.
+
+now testing the linear model:
+
+```{r}
+summary(m_h1)
+```
+
+-   Characters from Realist universes receive similarity scores that are, on average, 0.087 points higher than characters from Fantastical universes.
+
+-   R-squared = 0.0021: Genre explains about 0.2% of the variance in perceived similarity. This is a very small effect size.
+
+Interpretation:
+
+A General Linear Model was estimated to examine the effect of fictional genre on perceived similarity. Results indicate a statistically significant effect of genre, such that characters from realist universes were rated as more similar to respondents than characters from fantastical universes (β = 0.087, p \< .001). However, the magnitude of this effect was small, with genre explaining approximately 0.2% of the variance in perceived similarity (R² = .002). This suggests that while genre is systematically associated with perceived similarity, it accounts for only a limited portion of individual variation in identification with fictional characters.
+
+Visual representation of the model:
+
+```{r}
+ggplot(analysis_df, aes(x = universe_genre, y = mean_similarity)) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(method = "lm", se = TRUE)
+```

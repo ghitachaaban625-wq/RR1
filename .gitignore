@@ -47,3 +47,9 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Large datasets (do not upload)
+Data_RR1.csv
+SWCPQ-Identification-Survey-Dataset-July2022.csv
+*.csv
+*.rds
